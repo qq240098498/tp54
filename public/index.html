@@ -107,6 +107,21 @@
             <button type="button" class="btn btn-ghost btn-small" id="refresh-cases">刷新列表</button>
           </div>
         </div>
+
+        <div class="batch-bar">
+          <div class="batch-pick">
+            <button type="button" class="btn btn-small" id="select-all-cases">全选当前列表</button>
+            <button type="button" class="btn btn-small" id="clear-select-cases">清空选择</button>
+            <span class="counter" id="select-count">已选 0 条</span>
+          </div>
+          <div class="batch-run">
+            <button type="button" class="btn btn-primary btn-small" id="run-batch" disabled>开始执行</button>
+            <button type="button" class="btn btn-danger btn-small" id="stop-batch" hidden>停止执行</button>
+          </div>
+        </div>
+
+        <div id="batch-summary"></div>
+
         <div class="case-list" id="case-list"></div>
       </section>
 
