@@ -2,14 +2,17 @@
   'use strict';
 
   // 页面状态：用例列表、内置示例接口、请求头草稿行、最近一次响应结果与结果视图
+  // checkedIds 为列表勾选；batch 为正在进行或最近一次批量执行的完整快照
   const state = {
     cases: [],
     selectedId: '',
+    checkedIds: new Set(),
     headers: [{ key: '', value: '' }],
     demos: [],
     busy: false,
     result: null,
     resultView: 'structured',
+    batch: null,
   };
 
   const dom = {
@@ -32,6 +35,14 @@
     caseList: document.getElementById('case-list'),
     caseSummary: document.getElementById('case-summary'),
     refreshCases: document.getElementById('refresh-cases'),
+    selectAllCases: document.getElementById('select-all-cases'),
+    clearSelectCases: document.getElementById('clear-select-cases'),
+    selectSummary: document.getElementById('select-summary'),
+    runBatch: document.getElementById('run-batch'),
+    stopBatch: document.getElementById('stop-batch'),
+    batchPanel: document.getElementById('batch-panel'),
+    batchStatus: document.getElementById('batch-status'),
+    batchBody: document.getElementById('batch-body'),
     caseDetail: document.getElementById('case-detail'),
     closeDetail: document.getElementById('close-detail'),
   };
@@ -51,11 +62,14 @@
       init.headers = { 'Content-Type': 'application/json' };
       init.body = JSON.stringify(config.body);
     }
+    if (config.signal) init.signal = config.signal;
 
     let response = null;
     try {
       response = await fetch(path, init);
     } catch (err) {
+      // 批量执行停止时主动中断的请求，原样抛出由调用方按已取消处理
+      if (err && err.name === 'AbortError') throw err;
       const error = new Error('无法连接服务，请确认服务已启动');
       error.code = 'NETWORK_ERROR';
       error.field = '';
@@ -279,7 +293,7 @@
   // ---------------- 发送请求与结果展示 ----------------
 
   async function sendRequest() {
-    if (state.busy) return;
+    if (state.busy || isBatchRunning()) return;
     clearFieldErrors();
 
     const draft = collectDraft();
@@ -563,10 +577,21 @@
     if (state.selectedId && !state.cases.some((item) => item.id === state.selectedId)) {
       state.selectedId = '';
     }
+    // 列表刷新后，勾选里指向已删除用例的条目清掉；已结束批次的历史记录保持原样
+    const validIds = new Set(state.cases.map((item) => item.id));
+    state.checkedIds.forEach((id) => {
+      if (!validIds.has(id)) state.checkedIds.delete(id);
+    });
     renderCases();
   }
 
   function renderCases() {
+    // 整列表重建会收起已展开的失败原因，先记下哪些用例的详情正开着
+    const openFailures = new Set();
+    dom.caseList.querySelectorAll('details[data-case-id][open]').forEach((node) => {
+      openFailures.add(node.dataset.caseId);
+    });
+
     dom.caseSummary.textContent = `共 ${state.cases.length} 条`;
     dom.caseList.textContent = '';
 
@@ -574,11 +599,42 @@
       dom.caseList.appendChild(
         buildEmptyBlock('还没有保存过用例', '在请求区填好内容后点「保存为用例」，用例会出现在这里。')
       );
-      return;
+    } else {
+      state.cases.forEach((item) => {
+        dom.caseList.appendChild(buildCaseRow(item));
+      });
     }
-    state.cases.forEach((item) => {
-      dom.caseList.appendChild(buildCaseRow(item));
+    openFailures.forEach((id) => {
+      const node = dom.caseList.querySelector(`details[data-case-id="${id}"]`);
+      if (node) node.open = true;
     });
+    renderBatchControls();
+  }
+
+  // 勾选计数、全选/清空/开始/停止几个入口的可用状态统一在这里刷新
+  function renderBatchControls() {
+    const running = !!state.batch && state.batch.running;
+    const total = state.cases.length;
+    const checkedCount = state.cases.reduce(
+      (count, item) => (state.checkedIds.has(item.id) ? count + 1 : count),
+      0
+    );
+
+    dom.selectSummary.textContent = running
+      ? `本次批次已选 ${state.batch.entries.length} 条`
+      : `已选 ${checkedCount} 条`;
+
+    dom.selectAllCases.disabled = running || total === 0 || checkedCount === total;
+    dom.clearSelectCases.disabled = running || checkedCount === 0;
+    dom.runBatch.hidden = running;
+    dom.stopBatch.hidden = !running;
+    dom.runBatch.disabled = state.busy || checkedCount === 0;
+    // 执行过程中不允许刷新列表或改动请求区，避免列表顺序与批次条目错位
+    dom.refreshCases.disabled = state.busy || running;
+    dom.sendRequest.disabled = state.busy || running;
+    dom.saveCase.disabled = state.busy || running;
+    dom.resetDraft.disabled = state.busy || running;
+    dom.addHeader.disabled = running;
   }
 
   function buildEmptyBlock(title, subtitle) {
@@ -611,7 +667,22 @@
   function buildCaseRow(item) {
     const row = document.createElement('article');
     row.className = 'case-item';
+    row.dataset.caseId = item.id;
     if (item.id === state.selectedId) row.classList.add('active');
+
+    const checkCell = document.createElement('label');
+    checkCell.className = 'case-check';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = state.checkedIds.has(item.id);
+    checkbox.disabled = !!state.batch && state.batch.running;
+    checkbox.setAttribute('aria-label', `选择用例「${item.name}」`);
+    checkbox.addEventListener('change', () => {
+      if (checkbox.checked) state.checkedIds.add(item.id);
+      else state.checkedIds.delete(item.id);
+      renderBatchControls();
+    });
+    checkCell.appendChild(checkbox);
 
     const main = document.createElement('div');
     main.className = 'case-main';
@@ -634,6 +705,17 @@
 
     main.append(title, urlNode, metaNode);
 
+    const batchEntry = state.batch
+      ? state.batch.entries.find((entry) => entry.id === item.id)
+      : null;
+    if (batchEntry) {
+      const batchNode = buildBatchEntryLine(batchEntry);
+      main.appendChild(batchNode);
+      if (batchEntry.status === 'failed' || batchEntry.status === 'success') {
+        row.classList.add(`case-batch-${batchEntry.status}`);
+      }
+    }
+
     const actions = document.createElement('div');
     actions.className = 'case-actions';
 
@@ -641,6 +723,7 @@
     fillButton.type = 'button';
     fillButton.className = 'btn btn-small';
     fillButton.textContent = '回填';
+    fillButton.disabled = !!state.batch && state.batch.running;
     fillButton.addEventListener('click', () => {
       applyCase(item);
     });
@@ -649,6 +732,7 @@
     viewButton.type = 'button';
     viewButton.className = 'btn btn-small';
     viewButton.textContent = '详情';
+    viewButton.disabled = !!state.batch && state.batch.running;
     viewButton.addEventListener('click', () => {
       openDetail(item.id);
     });
@@ -657,18 +741,106 @@
     deleteButton.type = 'button';
     deleteButton.className = 'btn btn-small btn-danger';
     deleteButton.textContent = '删除';
+    deleteButton.disabled = !!state.batch && state.batch.running;
     deleteButton.addEventListener('click', () => {
       removeCase(item);
     });
 
     actions.append(fillButton, viewButton, deleteButton);
-    row.append(main, actions);
+    row.append(checkCell, main, actions);
     return row;
+  }
+
+  // 列表行内的本次批次状态：执行中、成功（状态码+耗时）、失败（可展开原因）、已取消
+  function buildBatchEntryLine(entry) {
+    const wrap = document.createElement('div');
+    wrap.className = 'case-batch-line';
+
+    if (entry.status === 'pending') {
+      wrap.classList.add('batch-pending');
+      wrap.textContent = '待执行';
+      return wrap;
+    }
+    if (entry.status === 'running') {
+      wrap.classList.add('batch-running');
+      wrap.textContent = '正在执行…';
+      return wrap;
+    }
+    if (entry.status === 'cancelled') {
+      wrap.classList.add('batch-cancelled');
+      wrap.textContent = '已取消';
+      return wrap;
+    }
+
+    const result = entry.result;
+    if (entry.status === 'success' && result && result.ok) {
+      wrap.classList.add('batch-ok');
+      const label = document.createElement('span');
+      label.className = 'batch-result-label';
+      label.textContent = `成功 · 状态码 ${result.status} · 耗时 ${formatDuration(result.timeMs)}`;
+      wrap.appendChild(label);
+      return wrap;
+    }
+
+    // 没拿到响应或拿到 400 及以上状态，都按失败呈现，失败原因可点开查看
+    wrap.classList.add('batch-failed');
+    const details = document.createElement('details');
+    details.className = 'batch-failure-details';
+    details.dataset.caseId = item.id;
+    const summary = document.createElement('summary');
+    const statusText = result && result.ok
+      ? `状态码 ${result.status}`
+      : (result && result.failure ? result.failure.reason : '请求未完成');
+    summary.textContent = `失败 · ${statusText} · 耗时 ${formatDuration(result ? result.timeMs : 0)}（点击查看原因）`;
+    details.appendChild(summary);
+    details.appendChild(buildFailureReasonBlock(result));
+    wrap.appendChild(details);
+    return wrap;
+  }
+
+  // 失败条目展开后的完整原因：网络层失败给出原因与详情，HTTP 失败状态码给出响应头与响应内容摘要
+  function buildFailureReasonBlock(result) {
+    const box = document.createElement('div');
+    box.className = 'batch-failure-box';
+
+    if (!result) {
+      box.appendChild(buildTextNote('这条用例没有拿到执行结果。'));
+      return box;
+    }
+
+    if (!result.ok) {
+      const reasonNode = document.createElement('p');
+      reasonNode.className = 'failure-reason';
+      reasonNode.textContent = `失败原因：${result.failure.reason}`;
+      box.appendChild(reasonNode);
+      if (result.failure.detail) {
+        const detailNode = document.createElement('p');
+        detailNode.className = 'failure-detail';
+        detailNode.textContent = `详细信息：${result.failure.detail}`;
+        box.appendChild(detailNode);
+      }
+      return box;
+    }
+
+    const statusNode = document.createElement('p');
+    statusNode.className = 'failure-reason';
+    statusNode.textContent = `目标返回了失败状态码：${result.status} ${result.statusText}`.trim();
+    box.appendChild(statusNode);
+
+    if (Array.isArray(result.headers) && result.headers.length) {
+      box.appendChild(buildTextNote('响应头：'));
+      box.appendChild(buildHeaderTable(result.headers));
+    }
+    if (result.body) {
+      box.appendChild(buildTextNote('响应内容：'));
+      box.appendChild(buildPre(result.body));
+    }
+    return box;
   }
 
   // 回填：把用例保存下来的内容写回请求区，可以直接点发送请求重发一次
   function applyCase(item) {
-    if (state.busy) return;
+    if (state.busy || isBatchRunning()) return;
     fillDraft(item);
     state.selectedId = item.id;
     renderCases();
@@ -677,7 +849,7 @@
   }
 
   async function openDetail(id) {
-    if (state.busy) return;
+    if (state.busy || isBatchRunning()) return;
     try {
       const item = await request(`/api/cases/${encodeURIComponent(id)}`);
       state.selectedId = item.id;
@@ -756,10 +928,309 @@
     dom.caseDetail.appendChild(subNode);
   }
 
+  // ---------------- 批量执行 ----------------
+
+  function isBatchRunning() {
+    return !!state.batch && state.batch.running;
+  }
+
+  function selectAllCases() {
+    if (isBatchRunning()) return;
+    state.cases.forEach((item) => state.checkedIds.add(item.id));
+    renderCases();
+  }
+
+  function clearCheckedCases() {
+    if (isBatchRunning()) return;
+    state.checkedIds.clear();
+    renderCases();
+  }
+
+  // 按列表当前顺序取出勾中的用例，批量执行过程中顺序不再随列表变化
+  function startBatch() {
+    if (state.busy || isBatchRunning()) return;
+    const selected = state.cases.filter((item) => state.checkedIds.has(item.id));
+    if (!selected.length) {
+      showNotice('请先勾选要执行的用例', 'error');
+      return;
+    }
+
+    state.batch = {
+      startedAt: Date.now(),
+      finishedAt: null,
+      running: true,
+      stopped: false,
+      abortController: null,
+      timer: 0,
+      entries: selected.map((item) => ({
+        id: item.id,
+        name: item.name,
+        method: item.method,
+        url: item.url,
+        // 整份请求内容在发起时快照，执行过程中不再受请求区草稿影响
+        headers: item.headers.map((row) => ({ key: row.key, value: row.value })),
+        body: item.body,
+        status: 'pending', // pending / running / success / failed / cancelled
+        result: null,
+      })),
+    };
+
+    dom.batchPanel.hidden = false;
+    renderCases();
+    runBatch();
+  }
+
+  async function runBatch() {
+    const batch = state.batch;
+    // 执行过程中定时刷新已用时长，结束时统一清掉
+    batch.timer = window.setInterval(renderBatchTick, 200);
+    showNotice(`批量执行已开始，共 ${batch.entries.length} 条用例，按列表顺序逐条执行`, 'info');
+
+    for (const entry of batch.entries) {
+      // 每条开始前先看是否已被停止：没开始的一律标为已取消，不再发请求。
+      // 停止后剩余条目在同一个同步循环里处理完，渲染交给循环结束后的 finishBatch 统一做
+      if (!batch.running) {
+        entry.status = 'cancelled';
+        continue;
+      }
+
+      entry.status = 'running';
+      renderCaseRowById(entry.id);
+      renderBatchSummary();
+
+      const startedAt = Date.now();
+      const controller = new AbortController();
+      batch.abortController = controller;
+      try {
+        const result = await request('/api/send', {
+          method: 'POST',
+          body: {
+            method: entry.method,
+            url: entry.url,
+            headers: entry.headers,
+            body: entry.body,
+          },
+          signal: controller.signal,
+        });
+        // 等待响应期间点了停止：这条还没算完成，按已取消处理，后面的条目也不再开始
+        entry.result = result;
+        entry.status = batch.running && result.ok && result.status < 400 ? 'success' : 'failed';
+        if (!batch.running) entry.status = 'cancelled';
+      } catch (err) {
+        if (err && err.name === 'AbortError') {
+          entry.status = 'cancelled';
+        } else {
+          entry.status = 'failed';
+          entry.result = {
+            ok: false,
+            targetUrl: entry.url,
+            timeMs: Date.now() - startedAt,
+            failure: { reason: err.message, detail: '' },
+          };
+        }
+      }
+      batch.abortController = null;
+      renderCaseRowById(entry.id);
+      renderBatchSummary();
+    }
+
+    finishBatch();
+  }
+
+  // 停止：立即中断正在执行的那一条，循环随后把未开始的条目全部标为已取消
+  function stopBatch() {
+    const batch = state.batch;
+    if (!batch || !batch.running) return;
+    batch.running = false;
+    batch.stopped = true;
+    if (batch.abortController) batch.abortController.abort();
+    renderBatchSummary();
+    showNotice('已停止批量执行，未开始的用例标记为已取消', 'info');
+  }
+
+  function finishBatch() {
+    const batch = state.batch;
+    batch.running = false;
+    batch.finishedAt = Date.now();
+    if (batch.timer) {
+      window.clearInterval(batch.timer);
+      batch.timer = 0;
+    }
+    batch.abortController = null;
+    renderCases();
+    renderBatchSummary();
+
+    const stats = countBatchEntries(batch);
+    if (batch.stopped) {
+      showNotice(
+        `批量执行已停止：成功 ${stats.success} 条，失败 ${stats.failed} 条，取消 ${stats.cancelled} 条`,
+        'info'
+      );
+    } else if (stats.failed) {
+      showNotice(`批量执行完成：${stats.success} 条成功，${stats.failed} 条失败`, 'error');
+    } else {
+      showNotice(`批量执行完成：全部 ${stats.success} 条用例成功`, 'success');
+    }
+  }
+
+  function countBatchEntries(batch) {
+    const stats = { total: batch.entries.length, success: 0, failed: 0, cancelled: 0, pending: 0 };
+    batch.entries.forEach((entry) => {
+      if (Object.prototype.hasOwnProperty.call(stats, entry.status)) stats[entry.status] += 1;
+    });
+    return stats;
+  }
+
+  // 只替换列表里的某一行，避免每完成一条就整列表重建
+  function renderCaseRowById(id) {
+    const item = state.cases.find((caseItem) => caseItem.id === id);
+    const old = dom.caseList.querySelector(`[data-case-id="${id}"]`);
+    if (!item || !old) return;
+    old.replaceWith(buildCaseRow(item));
+  }
+
+  // 批次摘要面板：发起时间、执行状态、四种计数与总耗时
+  function renderBatchSummary() {
+    const batch = state.batch;
+    if (!batch) return;
+    // 重建面板会收起已展开的失败原因，先按条目序号记下来再恢复
+    const openIndexes = new Set();
+    dom.batchBody.querySelectorAll('details[data-batch-index][open]').forEach((node) => {
+      openIndexes.add(Number(node.dataset.batchIndex));
+    });
+
+    dom.batchPanel.hidden = false;
+    dom.batchBody.textContent = '';
+
+    const stats = countBatchEntries(batch);
+    const finishedCount = stats.success + stats.failed + stats.cancelled;
+    const elapsed = (batch.running ? Date.now() : batch.finishedAt || Date.now()) - batch.startedAt;
+
+    if (batch.running) {
+      dom.batchStatus.textContent = batch.stopped
+        ? `正在停止… ${finishedCount}/${stats.total} 已结束`
+        : `正在执行 ${finishedCount + 1}/${stats.total} · 已用 ${formatDuration(elapsed)}`;
+    } else {
+      dom.batchStatus.textContent = batch.stopped ? '已停止' : '已完成';
+    }
+
+    const infoLine = document.createElement('p');
+    infoLine.className = 'batch-meta-line';
+    infoLine.textContent = `发起时间：${formatTime(batch.startedAt)}`;
+    dom.batchBody.appendChild(infoLine);
+
+    const statLine = document.createElement('div');
+    statLine.className = 'batch-stats';
+    statLine.append(
+      buildBatchStat('总条数', stats.total, 'stat-total'),
+      buildBatchStat('成功', stats.success, 'stat-ok'),
+      buildBatchStat('失败', stats.failed, 'stat-bad'),
+      buildBatchStat('取消', stats.cancelled, 'stat-muted'),
+      buildBatchStat('总耗时', formatDuration(elapsed), 'stat-total', 'batch-elapsed')
+    );
+    dom.batchBody.appendChild(statLine);
+
+    const entryList = document.createElement('div');
+    entryList.className = 'batch-entry-list';
+    batch.entries.forEach((entry, index) => {
+      const rowNode = buildBatchSummaryRow(entry, index);
+      if (openIndexes.has(index)) {
+        const detailsNode = rowNode.querySelector('details[data-batch-index]');
+        if (detailsNode) detailsNode.open = true;
+      }
+      entryList.appendChild(rowNode);
+    });
+    dom.batchBody.appendChild(entryList);
+  }
+
+  // 计时跳动时只改状态文字与总耗时，不重建面板，避免打断展开的详情
+  function renderBatchTick() {
+    const batch = state.batch;
+    if (!batch || !batch.running) return;
+    const stats = countBatchEntries(batch);
+    const finishedCount = stats.success + stats.failed + stats.cancelled;
+    const elapsed = Date.now() - batch.startedAt;
+    dom.batchStatus.textContent = batch.stopped
+      ? `正在停止… ${finishedCount}/${stats.total} 已结束`
+      : `正在执行 ${finishedCount + 1}/${stats.total} · 已用 ${formatDuration(elapsed)}`;
+    const elapsedNode = document.getElementById('batch-elapsed');
+    if (elapsedNode) elapsedNode.textContent = formatDuration(elapsed);
+  }
+
+  function buildBatchStat(label, value, extraClass, valueId) {
+    const chip = document.createElement('span');
+    chip.className = `batch-stat ${extraClass || ''}`;
+    const labelNode = document.createElement('span');
+    labelNode.className = 'batch-stat-label';
+    labelNode.textContent = label;
+    const valueNode = document.createElement('span');
+    valueNode.className = 'batch-stat-value';
+    valueNode.textContent = String(value);
+    if (valueId) valueNode.id = valueId;
+    chip.append(labelNode, valueNode);
+    return chip;
+  }
+
+  // 批次面板里的逐条结果行，失败行同样可以点开看完整原因
+  function buildBatchSummaryRow(entry, index) {
+    const line = document.createElement('div');
+    line.className = `batch-entry batch-entry-${entry.status}`;
+
+    const head = document.createElement('div');
+    head.className = 'batch-entry-head';
+    const indexNode = document.createElement('span');
+    indexNode.className = 'batch-entry-index';
+    indexNode.textContent = `${index + 1}.`;
+    head.append(indexNode, buildTag(entry.method, String(entry.method).toLowerCase()));
+
+    const nameNode = document.createElement('span');
+    nameNode.className = 'batch-entry-name';
+    nameNode.textContent = entry.name;
+    head.appendChild(nameNode);
+
+    const statusNode = document.createElement('span');
+    statusNode.className = 'batch-entry-status';
+    head.appendChild(statusNode);
+    line.appendChild(head);
+
+    if (entry.status === 'pending') {
+      statusNode.textContent = '待执行';
+      return line;
+    }
+    if (entry.status === 'running') {
+      statusNode.textContent = '正在执行…';
+      return line;
+    }
+    if (entry.status === 'cancelled') {
+      statusNode.textContent = '已取消';
+      return line;
+    }
+
+    const result = entry.result;
+    if (entry.status === 'success') {
+      statusNode.textContent = `成功 · 状态码 ${result.status} · 耗时 ${formatDuration(result.timeMs)}`;
+      return line;
+    }
+
+    statusNode.textContent = '失败';
+    const details = document.createElement('details');
+    details.className = 'batch-failure-details';
+    details.dataset.batchIndex = String(index);
+    const summary = document.createElement('summary');
+    const brief = result && result.ok
+      ? `状态码 ${result.status} · 耗时 ${formatDuration(result.timeMs)}（点击查看原因）`
+      : `${result && result.failure ? result.failure.reason : '请求未完成'} · 耗时 ${formatDuration(result ? result.timeMs : 0)}（点击查看原因）`;
+    summary.textContent = brief;
+    details.appendChild(summary);
+    details.appendChild(buildFailureReasonBlock(result));
+    line.appendChild(details);
+    return line;
+  }
+
   // ---------------- 保存与删除 ----------------
 
   async function saveCase() {
-    if (state.busy) return;
+    if (state.busy || isBatchRunning()) return;
     clearFieldErrors();
 
     const draft = collectDraft();
@@ -792,7 +1263,7 @@
   }
 
   async function removeCase(item) {
-    if (state.busy) return;
+    if (state.busy || isBatchRunning()) return;
     const confirmed = window.confirm(`确认删除用例「${item.name}」？删除后无法恢复。`);
     if (!confirmed) return;
 
@@ -945,7 +1416,7 @@
     dom.saveCase.addEventListener('click', saveCase);
 
     dom.resetDraft.addEventListener('click', () => {
-      if (state.busy) return;
+      if (state.busy || isBatchRunning()) return;
       resetDraft(false);
     });
 
@@ -970,6 +1441,11 @@
       renderCases();
       renderEmptyDetail();
     });
+
+    dom.selectAllCases.addEventListener('click', selectAllCases);
+    dom.clearSelectCases.addEventListener('click', clearCheckedCases);
+    dom.runBatch.addEventListener('click', startBatch);
+    dom.stopBatch.addEventListener('click', stopBatch);
   }
 
   async function init() {

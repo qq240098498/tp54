@@ -368,6 +368,18 @@ input.invalid,
 
 /* ---------- 用例列表 ---------- */
 
+.batch-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.toolbar-spacer {
+  flex: 1;
+}
+
 .case-list {
   display: flex;
   flex-direction: column;
@@ -381,6 +393,7 @@ input.invalid,
   gap: 12px;
   padding: 12px 14px;
   border: 1px solid var(--border);
+  border-left-width: 3px;
   border-radius: 8px;
   background: #fff;
 }
@@ -395,8 +408,108 @@ input.invalid,
   background: var(--accent-soft);
 }
 
+.case-item.case-batch-success {
+  border-left-color: var(--success);
+}
+
+.case-item.case-batch-failed {
+  border-left-color: var(--danger);
+}
+
+.case-check {
+  display: flex;
+  align-items: center;
+  padding-top: 2px;
+  cursor: pointer;
+}
+
+.case-check input {
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
+.case-check input:disabled {
+  cursor: not-allowed;
+}
+
 .case-main {
   min-width: 0;
+  flex: 1;
+}
+
+/* 列表行内的本次批次执行结论 */
+.case-batch-line {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.batch-pending {
+  color: var(--text-soft);
+}
+
+.batch-running {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.batch-running::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: batch-pulse 1s ease-in-out infinite;
+  vertical-align: middle;
+}
+
+@keyframes batch-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.batch-ok {
+  color: var(--success);
+}
+
+.batch-failed {
+  color: var(--danger);
+}
+
+.batch-cancelled {
+  color: var(--text-soft);
+}
+
+.batch-failure-details {
+  margin-top: 2px;
+}
+
+.batch-failure-details summary {
+  cursor: pointer;
+  color: var(--danger);
+}
+
+.batch-failure-details summary:hover {
+  text-decoration: underline;
+}
+
+.batch-failure-box {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid #f0c2bc;
+  border-radius: 8px;
+  background: var(--danger-soft);
+}
+
+.batch-failure-box .header-table {
+  margin-bottom: 8px;
+  background: #fff;
+}
+
+.batch-failure-box .result-pre {
+  max-height: 240px;
 }
 
 .case-title {
@@ -812,6 +925,137 @@ input.invalid,
   font-family: "Consolas", "Courier New", monospace;
   font-size: 12px;
   word-break: break-all;
+}
+
+/* ---------- 批量执行结果 ---------- */
+
+.batch-meta-line {
+  margin: 0 0 10px;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.batch-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.batch-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fafbfd;
+  font-size: 12px;
+}
+
+.batch-stat-label {
+  color: var(--text-soft);
+}
+
+.batch-stat-value {
+  font-weight: 600;
+}
+
+.batch-stat.stat-ok {
+  border-color: #b6dcc3;
+  background: var(--success-soft);
+}
+
+.batch-stat.stat-ok .batch-stat-value {
+  color: var(--success);
+}
+
+.batch-stat.stat-bad {
+  border-color: #f0c2bc;
+  background: var(--danger-soft);
+}
+
+.batch-stat.stat-bad .batch-stat-value {
+  color: var(--danger);
+}
+
+.batch-stat.stat-muted .batch-stat-value {
+  color: var(--text-soft);
+}
+
+.batch-entry-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.batch-entry {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 12px;
+}
+
+.batch-entry-success {
+  border-left-color: var(--success);
+}
+
+.batch-entry-failed {
+  border-left-color: var(--danger);
+}
+
+.batch-entry-running {
+  border-left-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.batch-entry-cancelled {
+  border-left-color: var(--border-strong);
+  background: #fafbfd;
+}
+
+.batch-entry-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.batch-entry-index {
+  color: var(--text-soft);
+  font-family: "Consolas", "Courier New", monospace;
+}
+
+.batch-entry-name {
+  font-weight: 600;
+}
+
+.batch-entry-status {
+  margin-left: auto;
+  color: var(--text-soft);
+}
+
+.batch-entry-success .batch-entry-status {
+  color: var(--success);
+}
+
+.batch-entry-failed .batch-entry-status {
+  color: var(--danger);
+}
+
+.batch-entry-running .batch-entry-status {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.batch-entry .batch-failure-details {
+  margin-top: 6px;
+}
+
+.batch-entry .batch-failure-box {
+  background: #fff;
 }
 
 /* ---------- 窄屏 ---------- */
